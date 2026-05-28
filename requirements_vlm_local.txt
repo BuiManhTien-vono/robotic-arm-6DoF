@@ -1,0 +1,18 @@
+# Use Python 3.10 for this environment. Python 3.12+ can force older pinned
+# packages such as numpy to build from source and fail on Windows.
+#
+# Install PyTorch and torchvision first with the wheel index matching your CUDA/CPU.
+# Example CUDA 12.1:
+#   python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# CPU-only:
+#   python -m pip install torch torchvision torchaudio
+
+python-dotenv==1.2.2
+pydantic==2.13.4
+Pillow==12.2.0
+opencv-python==4.10.0.84
+numpy==1.24.4
+transformers==4.51.3
+huggingface-hub<1.0
+accelerate>=0.34.0
+qwen-vl-utils>=0.0.8

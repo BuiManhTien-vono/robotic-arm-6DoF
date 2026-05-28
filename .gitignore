@@ -1,0 +1,49 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python environments and package caches
+.venv/
+.venv_*/
+**/.venv/
+.uv-cache/
+**/.uv-cache/
+
+# Python/runtime caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.pyd
+*.dll
+*.lib
+*.exp
+*.obj
+
+# HuggingFace/local model cache
+.hf_cache/
+
+# Generated outputs
+data/outputs/
+graspnet-baseline/outputs/
+
+# Large model/checkpoint artifacts
+checkpoints/
+**/checkpoints/
+*.safetensors
+*.ckpt
+*.pth
+*.pt
+*.tar
+
+# Local nested git backup created when this project is committed as one repo
+graspnet-baseline/.git_nested_backup_before_root_push/
