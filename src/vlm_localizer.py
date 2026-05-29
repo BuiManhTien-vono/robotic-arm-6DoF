@@ -108,6 +108,37 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _torch_dtype_from_env(torch_module: Any) -> Any:
+    value = os.getenv("QWEN_VL_TORCH_DTYPE", "auto").strip().lower()
+    if value in {"", "auto"}:
+        return "auto"
+    aliases = {
+        "fp16": torch_module.float16,
+        "float16": torch_module.float16,
+        "half": torch_module.float16,
+        "bf16": torch_module.bfloat16,
+        "bfloat16": torch_module.bfloat16,
+        "fp32": torch_module.float32,
+        "float32": torch_module.float32,
+    }
+    if value not in aliases:
+        raise ValueError(f"Unsupported QWEN_VL_TORCH_DTYPE={value!r}. Use auto, float16, bfloat16, or float32.")
+    return aliases[value]
+
+
+def _max_memory_from_env() -> dict[Any, str] | None:
+    gpu_memory = os.getenv("QWEN_VL_MAX_MEMORY_GPU")
+    cpu_memory = os.getenv("QWEN_VL_MAX_MEMORY_CPU")
+    if not gpu_memory and not cpu_memory:
+        return None
+    max_memory: dict[Any, str] = {}
+    if gpu_memory:
+        max_memory[0] = gpu_memory
+    if cpu_memory:
+        max_memory["cpu"] = cpu_memory
+    return max_memory
+
+
 def _env_int(name: str) -> int | None:
     value = os.getenv(name)
     if value is None or value.strip() == "":
@@ -203,9 +234,16 @@ def _load_qwen_model_processor(
         raise _missing_qwen_dependency_error(exc) from exc
 
     model_kwargs: dict[str, Any] = {
-        "torch_dtype": "auto",
+        "torch_dtype": _torch_dtype_from_env(torch),
         "device_map": device_map,
+        "low_cpu_mem_usage": True,
     }
+    max_memory = _max_memory_from_env()
+    if max_memory is not None:
+        model_kwargs["max_memory"] = max_memory
+    attn_implementation = os.getenv("QWEN_VL_ATTENTION_IMPL")
+    if attn_implementation:
+        model_kwargs["attn_implementation"] = attn_implementation
     if load_in_4bit:
         try:
             from transformers import BitsAndBytesConfig
