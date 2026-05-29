@@ -6,6 +6,18 @@ Set-Location $ProjectRoot
 $GraspnetPython = Join-Path $ProjectRoot "graspnet-baseline\.venv\Scripts\python.exe"
 $VlmPython = Join-Path $ProjectRoot ".venv_vlm\Scripts\python.exe"
 $ModelCache = Join-Path $ProjectRoot ".hf_cache\hub\models--Qwen--Qwen2-VL-2B-Instruct"
+$RequiredCacheFiles = @(
+    "config.json",
+    "generation_config.json",
+    "model.safetensors.index.json",
+    "model-00001-of-00002.safetensors",
+    "model-00002-of-00002.safetensors",
+    "preprocessor_config.json",
+    "tokenizer_config.json",
+    "tokenizer.json",
+    "vocab.json",
+    "merges.txt"
+)
 
 if (-not (Test-Path -LiteralPath $GraspnetPython)) {
     throw "Missing GraspNet/PyBullet Python: $GraspnetPython"
@@ -20,8 +32,25 @@ $env:HF_HUB_DISABLE_SYMLINKS_WARNING = "1"
 $env:HF_HUB_ETAG_TIMEOUT = "1"
 
 $OfflineArg = "--vlm-offline"
-if (-not (Test-Path -LiteralPath $ModelCache)) {
-    Write-Host "Qwen/Qwen2-VL-2B-Instruct is not cached yet. First run will download it."
+$SnapshotDir = $null
+if (Test-Path -LiteralPath (Join-Path $ModelCache "snapshots")) {
+    $SnapshotDir = Get-ChildItem -LiteralPath (Join-Path $ModelCache "snapshots") -Directory |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+}
+$MissingCacheFiles = @()
+if ($null -eq $SnapshotDir) {
+    $MissingCacheFiles = $RequiredCacheFiles
+} else {
+    foreach ($FileName in $RequiredCacheFiles) {
+        if (-not (Test-Path -LiteralPath (Join-Path $SnapshotDir.FullName $FileName))) {
+            $MissingCacheFiles += $FileName
+        }
+    }
+}
+if ($MissingCacheFiles.Count -gt 0) {
+    Write-Host "Qwen/Qwen2-VL-2B-Instruct cache is incomplete. Missing: $($MissingCacheFiles -join ', ')"
+    Write-Host "This run will use internet to finish the cache. Later runs can use offline mode."
     $OfflineArg = "--no-vlm-offline"
 }
 

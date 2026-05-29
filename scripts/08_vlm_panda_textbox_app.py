@@ -1,4 +1,5 @@
 import argparse
+import ctypes
 import importlib.util
 import json
 import os
@@ -23,6 +24,31 @@ VLM_PANDA_SCRIPT = PROJECT_ROOT / "scripts" / "07_run_vlm_panda_pick_place.py"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "outputs" / "vlm_panda_textbox"
 DEFAULT_VLM_PYTHON = PROJECT_ROOT / ".venv_vlm" / "Scripts" / "python.exe"
 VLM_TEST_SCRIPT = PROJECT_ROOT / "scripts" / "01_test_vlm.py"
+WINDOWS_ACCESS_VIOLATION = 3221225477
+
+
+class _MemoryStatusEx(ctypes.Structure):
+    _fields_ = [
+        ("dwLength", ctypes.c_ulong),
+        ("dwMemoryLoad", ctypes.c_ulong),
+        ("ullTotalPhys", ctypes.c_ulonglong),
+        ("ullAvailPhys", ctypes.c_ulonglong),
+        ("ullTotalPageFile", ctypes.c_ulonglong),
+        ("ullAvailPageFile", ctypes.c_ulonglong),
+        ("ullTotalVirtual", ctypes.c_ulonglong),
+        ("ullAvailVirtual", ctypes.c_ulonglong),
+        ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+    ]
+
+
+def available_memory_gb() -> float | None:
+    if os.name != "nt":
+        return None
+    status = _MemoryStatusEx()
+    status.dwLength = ctypes.sizeof(status)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        return None
+    return status.ullAvailPhys / (1024**3)
 
 
 def load_module(path: Path, name: str):
@@ -378,6 +404,9 @@ class VlmPandaTextboxApp:
             f"max_new_tokens={env['QWEN_VL_MAX_NEW_TOKENS']}, "
             f"offline={self.args.vlm_offline}"
         )
+        free_ram_gb = available_memory_gb()
+        if free_ram_gb is not None:
+            self.log(f"System RAM available before Qwen: {free_ram_gb:.2f} GB.")
         self.log("Qwen is running. CPU mode can take several minutes.")
 
         process = subprocess.Popen(
@@ -429,6 +458,16 @@ class VlmPandaTextboxApp:
 
         elapsed = int(time.monotonic() - start_time)
         if process.returncode != 0:
+            if process.returncode == WINDOWS_ACCESS_VIOLATION:
+                free_ram_note = ""
+                free_ram_gb = available_memory_gb()
+                if free_ram_gb is not None:
+                    free_ram_note = f" Current available RAM: {free_ram_gb:.2f} GB."
+                raise RuntimeError(
+                    "Qwen crashed with Windows access violation 0xC0000005 while loading the model. "
+                    "On this machine this usually means the CPU model load ran out of usable RAM."
+                    f"{free_ram_note} Close other apps or use GPU/quantized/smaller VLM."
+                )
             raise RuntimeError(f"Qwen subprocess failed after {elapsed}s with exit code {process.returncode}.")
         self.log(f"Qwen finished in {elapsed}s.")
 
