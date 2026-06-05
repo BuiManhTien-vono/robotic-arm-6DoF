@@ -139,11 +139,14 @@ class VlmPandaTextboxApp:
 
         self.root.after(100, self.poll_log_queue)
         self.log("Ready. Nhap lenh vao textbox roi bam Run Command.")
+        if self.should_preload_qwen_worker():
+            self.root.after(500, self.preload_qwen_worker_async)
 
     def log(self, message: str) -> None:
         self.log_queue.put(message)
 
     def poll_log_queue(self) -> None:
+        self.drain_qwen_worker_stderr()
         while True:
             try:
                 message = self.log_queue.get_nowait()
@@ -259,6 +262,9 @@ class VlmPandaTextboxApp:
                 self.log(f"Selection fallback: {selection.get('fallback_reason')}")
 
             if use_graspnet:
+                if self.args.vlm_stop_before_graspnet:
+                    self.stop_qwen_worker()
+                    self.log("Stopped Qwen worker before GraspNet to free RAM/VRAM.")
                 removed_alloc_conf = clear_unsupported_graspnet_cuda_alloc_conf()
                 if removed_alloc_conf:
                     self.log(
@@ -311,6 +317,8 @@ class VlmPandaTextboxApp:
             self.running = False
             self.root.after(0, lambda: self.run_button.configure(state="normal"))
             self.root.after(0, lambda: self.reset_button.configure(state="normal"))
+            if self.should_preload_qwen_worker():
+                self.root.after(500, self.preload_qwen_worker_async)
 
     def fast_semantic_localization(self, segmentation, command: str) -> dict | None:
         visible_bboxes = vlm_panda.visible_object_bboxes(segmentation, self.sim.object_ids)
@@ -416,8 +424,12 @@ class VlmPandaTextboxApp:
 
         self.qwen_worker_stdout = queue.Queue()
         self.qwen_worker_stderr = queue.Queue()
+        cmd = [str(vlm_python), str(QWEN_WORKER_SCRIPT)]
+        if self.args.vlm_preload and self.args.vlm_model:
+            cmd.extend(["--model", self.args.vlm_model, "--preload"])
+
         self.qwen_worker = subprocess.Popen(
-            [str(vlm_python), str(QWEN_WORKER_SCRIPT)],
+            cmd,
             cwd=str(PROJECT_ROOT),
             env=env,
             stdin=subprocess.PIPE,
@@ -437,6 +449,29 @@ class VlmPandaTextboxApp:
         assert self.qwen_worker.stderr is not None
         threading.Thread(target=read_stream, args=(self.qwen_worker.stdout, self.qwen_worker_stdout), daemon=True).start()
         threading.Thread(target=read_stream, args=(self.qwen_worker.stderr, self.qwen_worker_stderr), daemon=True).start()
+
+    def should_preload_qwen_worker(self) -> bool:
+        backend = (self.args.vlm_backend or "qwen-local").lower()
+        return (
+            self.args.vlm_subprocess
+            and self.args.vlm_keepalive
+            and self.args.vlm_preload
+            and backend in {"qwen-local", "qwen", "local"}
+        )
+
+    def preload_qwen_worker_async(self) -> None:
+        if self.running:
+            return
+        if self.qwen_worker is not None and self.qwen_worker.poll() is None:
+            return
+
+        def worker() -> None:
+            try:
+                self.start_qwen_worker()
+            except Exception as exc:
+                self.log(f"ERROR starting Qwen preload worker: {type(exc).__name__}: {exc}")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def drain_qwen_worker_stderr(self) -> None:
         while True:
@@ -683,6 +718,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vlm-model", default=None, help="Model id/name for the selected VLM backend.")
     parser.add_argument("--vlm-subprocess", action=argparse.BooleanOptionalAction, default=True, help="Run local Qwen in .venv_vlm subprocess.")
     parser.add_argument("--vlm-keepalive", action=argparse.BooleanOptionalAction, default=False, help="Keep a persistent local Qwen worker alive between commands.")
+    parser.add_argument("--vlm-preload", action=argparse.BooleanOptionalAction, default=False, help="Preload the persistent Qwen worker while the UI is idle.")
+    parser.add_argument("--vlm-stop-before-graspnet", action=argparse.BooleanOptionalAction, default=False, help="Stop Qwen worker before GraspNet to free RAM/VRAM on low-memory machines.")
     parser.add_argument("--vlm-python", default=str(DEFAULT_VLM_PYTHON), help="Python executable for the local Qwen environment.")
     parser.add_argument("--vlm-device-map", default="cpu", help="Qwen device_map used in subprocess, e.g. cpu or auto.")
     parser.add_argument("--vlm-offline", action=argparse.BooleanOptionalAction, default=True, help="Use local HuggingFace cache without HEAD requests.")

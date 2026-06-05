@@ -65,6 +65,8 @@ if ($MissingCacheFiles.Count -gt 0) {
     --vlm-model "Qwen/Qwen2.5-VL-3B-Instruct" `
     --vlm-subprocess `
     --vlm-keepalive `
+    --vlm-preload `
+    --vlm-stop-before-graspnet `
     --vlm-python $VlmPython `
     --vlm-device-map auto `
     --no-fast-semantic `

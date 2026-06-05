@@ -372,6 +372,35 @@ def _run_qwen_local(
     )[0]
 
 
+def preload_qwen_local(
+    *,
+    model_id: str,
+    min_pixels: int | None = None,
+    max_pixels: int | None = None,
+    device_map: str | None = None,
+    load_in_4bit: bool | None = None,
+) -> None:
+    try:
+        import torch
+    except ImportError as exc:
+        raise _missing_qwen_dependency_error(exc) from exc
+
+    min_pixels = min_pixels if min_pixels is not None else _env_int("QWEN_VL_MIN_PIXELS")
+    max_pixels = max_pixels if max_pixels is not None else _env_int("QWEN_VL_MAX_PIXELS")
+    device_map = device_map or os.getenv("QWEN_VL_DEVICE_MAP")
+    if device_map is None:
+        device_map = "auto" if torch.cuda.is_available() else "cpu"
+    load_in_4bit = _env_bool("QWEN_VL_4BIT", False) if load_in_4bit is None else load_in_4bit
+
+    _load_qwen_model_processor(
+        model_id=model_id,
+        min_pixels=min_pixels,
+        max_pixels=max_pixels,
+        device_map=device_map,
+        load_in_4bit=load_in_4bit,
+    )
+
+
 def _run_gemini(
     image_path: Path,
     prompt: str,

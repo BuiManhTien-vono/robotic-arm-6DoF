@@ -11,7 +11,7 @@ import cv2
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.vlm_localizer import localize_target_object
+from src.vlm_localizer import localize_target_object, preload_qwen_local
 
 
 def draw_bbox(image_path: Path, result: dict[str, Any], output_path: Path) -> None:
@@ -70,11 +70,21 @@ def handle_request(request: dict[str, Any]) -> dict[str, Any]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Persistent local Qwen VLM JSONL worker.")
     parser.add_argument("--ready-message", default="Qwen worker ready.")
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--preload", action="store_true")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    print("Qwen worker process started.", file=sys.stderr, flush=True)
+    if args.preload:
+        if not args.model:
+            raise ValueError("--preload requires --model")
+        start_time = time.monotonic()
+        print(f"Preloading Qwen model: {args.model}", file=sys.stderr, flush=True)
+        preload_qwen_local(model_id=args.model)
+        print(f"Qwen model preloaded in {time.monotonic() - start_time:.1f}s.", file=sys.stderr, flush=True)
     print(args.ready_message, file=sys.stderr, flush=True)
     for line in sys.stdin:
         line = line.strip()
