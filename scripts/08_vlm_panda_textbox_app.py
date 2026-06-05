@@ -24,6 +24,7 @@ VLM_PANDA_SCRIPT = PROJECT_ROOT / "scripts" / "07_run_vlm_panda_pick_place.py"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "outputs" / "vlm_panda_textbox"
 DEFAULT_VLM_PYTHON = PROJECT_ROOT / ".venv_vlm" / "Scripts" / "python.exe"
 VLM_TEST_SCRIPT = PROJECT_ROOT / "scripts" / "01_test_vlm.py"
+QWEN_WORKER_SCRIPT = PROJECT_ROOT / "scripts" / "qwen_vlm_worker.py"
 WINDOWS_ACCESS_VIOLATION = 3221225477
 
 
@@ -80,6 +81,10 @@ class VlmPandaTextboxApp:
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.running = False
         self.graspnet_adapter = None
+        self.qwen_worker = None
+        self.qwen_worker_stdout: queue.Queue[str] = queue.Queue()
+        self.qwen_worker_stderr: queue.Queue[str] = queue.Queue()
+        self.qwen_worker_lock = threading.Lock()
 
         self.sim = panda_module.PandaPickPlaceSim(
             gui=True,
@@ -357,6 +362,8 @@ class VlmPandaTextboxApp:
     ) -> dict:
         backend = (self.args.vlm_backend or "qwen-local").lower()
         if backend in {"qwen-local", "qwen", "local"} and self.args.vlm_subprocess:
+            if self.args.vlm_keepalive:
+                return self.localize_qwen_worker(image_path, command, extra_rules=extra_rules)
             return self.localize_qwen_subprocess(image_path, command, extra_rules=extra_rules)
         return localize_target_object(
             image_path,
@@ -365,6 +372,153 @@ class VlmPandaTextboxApp:
             model=self.args.vlm_model,
             extra_rules=extra_rules,
         )
+
+    def qwen_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        env.setdefault("HF_HOME", str(PROJECT_ROOT / ".hf_cache"))
+        env.setdefault("HF_HUB_DISABLE_XET", "1")
+        env.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+        env.setdefault("QWEN_VL_MAX_PIXELS", str(self.args.vlm_max_pixels))
+        env.setdefault("QWEN_VL_MAX_NEW_TOKENS", str(self.args.vlm_max_new_tokens))
+        env.setdefault("QWEN_VL_DEVICE_MAP", self.args.vlm_device_map)
+        if self.args.vlm_offline:
+            env.setdefault("HF_HUB_OFFLINE", "1")
+            env.setdefault("TRANSFORMERS_OFFLINE", "1")
+        return env
+
+    def log_qwen_settings(self, env: dict[str, str]) -> None:
+        self.log(
+            "Qwen settings: "
+            f"model={self.args.vlm_model or 'default'}, "
+            f"device_map={env['QWEN_VL_DEVICE_MAP']}, "
+            f"max_pixels={env['QWEN_VL_MAX_PIXELS']}, "
+            f"max_new_tokens={env['QWEN_VL_MAX_NEW_TOKENS']}, "
+            f"offline={self.args.vlm_offline}, "
+            f"4bit={env.get('QWEN_VL_4BIT', '0')}, "
+            f"8bit={env.get('QWEN_VL_8BIT', '0')}, "
+            f"keepalive={self.args.vlm_keepalive}"
+        )
+
+    def start_qwen_worker(self) -> None:
+        vlm_python = Path(self.args.vlm_python)
+        if not vlm_python.exists():
+            raise FileNotFoundError(f"Missing VLM Python environment: {vlm_python}")
+        if self.qwen_worker is not None and self.qwen_worker.poll() is None:
+            return
+
+        env = self.qwen_env()
+        self.log(f"Qwen worker subprocess: {vlm_python}")
+        self.log_qwen_settings(env)
+        free_ram_gb = available_memory_gb()
+        if free_ram_gb is not None:
+            self.log(f"System RAM available before Qwen worker: {free_ram_gb:.2f} GB.")
+        self.log("Starting persistent Qwen worker. First command still loads the model.")
+
+        self.qwen_worker_stdout = queue.Queue()
+        self.qwen_worker_stderr = queue.Queue()
+        self.qwen_worker = subprocess.Popen(
+            [str(vlm_python), str(QWEN_WORKER_SCRIPT)],
+            cwd=str(PROJECT_ROOT),
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+
+        def read_stream(stream, target_queue: queue.Queue[str]) -> None:
+            for stream_line in stream:
+                target_queue.put(stream_line.rstrip())
+
+        assert self.qwen_worker.stdout is not None
+        assert self.qwen_worker.stderr is not None
+        threading.Thread(target=read_stream, args=(self.qwen_worker.stdout, self.qwen_worker_stdout), daemon=True).start()
+        threading.Thread(target=read_stream, args=(self.qwen_worker.stderr, self.qwen_worker_stderr), daemon=True).start()
+
+    def drain_qwen_worker_stderr(self) -> None:
+        while True:
+            try:
+                line = self.qwen_worker_stderr.get_nowait()
+            except queue.Empty:
+                break
+            if line:
+                self.log(f"[Qwen] {line}")
+
+    def stop_qwen_worker(self) -> None:
+        process = self.qwen_worker
+        self.qwen_worker = None
+        if process is None:
+            return
+        try:
+            if process.poll() is None and process.stdin is not None:
+                process.stdin.write("__quit__\n")
+                process.stdin.flush()
+                process.wait(timeout=5)
+        except Exception:
+            if process.poll() is None:
+                process.terminate()
+
+    def localize_qwen_worker(
+        self,
+        image_path: Path,
+        command: str,
+        *,
+        extra_rules: str,
+    ) -> dict:
+        with self.qwen_worker_lock:
+            self.start_qwen_worker()
+            assert self.qwen_worker is not None
+            assert self.qwen_worker.stdin is not None
+
+            output_json = self.output_dir / "02_vlm_result.json"
+            output_image = self.output_dir / "02_vlm_bbox_raw.png"
+            request = {
+                "image": str(image_path),
+                "command": command,
+                "output_json": str(output_json),
+                "output_image": str(output_image),
+                "model": self.args.vlm_model,
+                "extra_rules": extra_rules,
+            }
+            self.qwen_worker.stdin.write(json.dumps(request, ensure_ascii=False) + "\n")
+            self.qwen_worker.stdin.flush()
+
+            start_time = time.monotonic()
+            next_heartbeat = start_time + 30.0
+            while True:
+                if self.qwen_worker.poll() is not None:
+                    raise RuntimeError(f"Qwen worker exited with code {self.qwen_worker.returncode}.")
+                self.drain_qwen_worker_stderr()
+                try:
+                    line = self.qwen_worker_stdout.get(timeout=0.2)
+                except queue.Empty:
+                    now = time.monotonic()
+                    if now >= next_heartbeat:
+                        elapsed = int(now - start_time)
+                        self.log(f"[Qwen] worker still running... elapsed {elapsed}s")
+                        next_heartbeat = now + 30.0
+                    continue
+                if not line:
+                    continue
+                try:
+                    response = json.loads(line)
+                except json.JSONDecodeError:
+                    self.log(f"[Qwen] {line}")
+                    continue
+                elapsed = int(time.monotonic() - start_time)
+                self.drain_qwen_worker_stderr()
+                if response.get("status") != "ok":
+                    raise RuntimeError(
+                        f"Qwen worker failed after {elapsed}s: "
+                        f"{response.get('error_type', 'Error')}: {response.get('error')}"
+                    )
+                self.log(f"Qwen worker finished in {elapsed}s.")
+                self.log(f"[Qwen] Saved JSON: {response.get('output_json')}")
+                self.log(f"[Qwen] Saved bbox image: {response.get('output_image')}")
+                return response["result"]
 
     def localize_qwen_subprocess(
         self,
@@ -379,16 +533,7 @@ class VlmPandaTextboxApp:
 
         output_json = self.output_dir / "02_vlm_result.json"
         output_image = self.output_dir / "02_vlm_bbox_raw.png"
-        env = os.environ.copy()
-        env.setdefault("HF_HOME", str(PROJECT_ROOT / ".hf_cache"))
-        env.setdefault("HF_HUB_DISABLE_XET", "1")
-        env.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-        env.setdefault("QWEN_VL_MAX_PIXELS", str(self.args.vlm_max_pixels))
-        env.setdefault("QWEN_VL_MAX_NEW_TOKENS", str(self.args.vlm_max_new_tokens))
-        env.setdefault("QWEN_VL_DEVICE_MAP", self.args.vlm_device_map)
-        if self.args.vlm_offline:
-            env.setdefault("HF_HUB_OFFLINE", "1")
-            env.setdefault("TRANSFORMERS_OFFLINE", "1")
+        env = self.qwen_env()
 
         cmd = [
             str(vlm_python),
@@ -410,16 +555,7 @@ class VlmPandaTextboxApp:
             cmd.extend(["--vlm-model", self.args.vlm_model])
 
         self.log(f"Qwen subprocess: {vlm_python}")
-        self.log(
-            "Qwen settings: "
-            f"model={self.args.vlm_model or 'default'}, "
-            f"device_map={env['QWEN_VL_DEVICE_MAP']}, "
-            f"max_pixels={env['QWEN_VL_MAX_PIXELS']}, "
-            f"max_new_tokens={env['QWEN_VL_MAX_NEW_TOKENS']}, "
-            f"offline={self.args.vlm_offline}, "
-            f"4bit={env.get('QWEN_VL_4BIT', '0')}, "
-            f"8bit={env.get('QWEN_VL_8BIT', '0')}"
-        )
+        self.log_qwen_settings(env)
         free_ram_gb = available_memory_gb()
         if free_ram_gb is not None:
             self.log(f"System RAM available before Qwen: {free_ram_gb:.2f} GB.")
@@ -523,6 +659,7 @@ class VlmPandaTextboxApp:
 
     def close(self) -> None:
         try:
+            self.stop_qwen_worker()
             self.sim.disconnect()
         finally:
             self.root.destroy()
@@ -545,6 +682,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vlm-backend", default=None, help="VLM backend: qwen-local or gemini. Default: VLM_BACKEND or qwen-local.")
     parser.add_argument("--vlm-model", default=None, help="Model id/name for the selected VLM backend.")
     parser.add_argument("--vlm-subprocess", action=argparse.BooleanOptionalAction, default=True, help="Run local Qwen in .venv_vlm subprocess.")
+    parser.add_argument("--vlm-keepalive", action=argparse.BooleanOptionalAction, default=False, help="Keep a persistent local Qwen worker alive between commands.")
     parser.add_argument("--vlm-python", default=str(DEFAULT_VLM_PYTHON), help="Python executable for the local Qwen environment.")
     parser.add_argument("--vlm-device-map", default="cpu", help="Qwen device_map used in subprocess, e.g. cpu or auto.")
     parser.add_argument("--vlm-offline", action=argparse.BooleanOptionalAction, default=True, help="Use local HuggingFace cache without HEAD requests.")
