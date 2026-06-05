@@ -51,6 +51,14 @@ def available_memory_gb() -> float | None:
     return status.ullAvailPhys / (1024**3)
 
 
+def clear_unsupported_graspnet_cuda_alloc_conf() -> str | None:
+    value = os.environ.get("PYTORCH_CUDA_ALLOC_CONF")
+    if not value or "expandable_segments" not in value:
+        return None
+    os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+    return value
+
+
 def load_module(path: Path, name: str):
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
@@ -246,6 +254,12 @@ class VlmPandaTextboxApp:
                 self.log(f"Selection fallback: {selection.get('fallback_reason')}")
 
             if use_graspnet:
+                removed_alloc_conf = clear_unsupported_graspnet_cuda_alloc_conf()
+                if removed_alloc_conf:
+                    self.log(
+                        "Cleared PYTORCH_CUDA_ALLOC_CONF before GraspNet "
+                        f"because torch 1.13 does not support it: {removed_alloc_conf}"
+                    )
                 self.log("Running GraspNet trained checkpoint...")
                 graspnet_summary, self.graspnet_adapter = vlm_panda.run_graspnet_for_object(
                     render_data,

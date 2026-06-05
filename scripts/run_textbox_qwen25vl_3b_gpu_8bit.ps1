@@ -30,7 +30,6 @@ $env:HF_HOME = Join-Path $ProjectRoot ".hf_cache"
 $env:HF_HUB_DISABLE_XET = "1"
 $env:HF_HUB_DISABLE_SYMLINKS_WARNING = "1"
 $env:HF_HUB_ETAG_TIMEOUT = "1"
-$env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
 Remove-Item Env:\QWEN_VL_4BIT -ErrorAction SilentlyContinue
 $env:QWEN_VL_8BIT = "1"
 $env:QWEN_VL_TORCH_DTYPE = "float16"
