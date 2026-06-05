@@ -402,12 +402,14 @@ class VlmPandaTextboxApp:
             f"device_map={env['QWEN_VL_DEVICE_MAP']}, "
             f"max_pixels={env['QWEN_VL_MAX_PIXELS']}, "
             f"max_new_tokens={env['QWEN_VL_MAX_NEW_TOKENS']}, "
-            f"offline={self.args.vlm_offline}"
+            f"offline={self.args.vlm_offline}, "
+            f"4bit={env.get('QWEN_VL_4BIT', '0')}, "
+            f"8bit={env.get('QWEN_VL_8BIT', '0')}"
         )
         free_ram_gb = available_memory_gb()
         if free_ram_gb is not None:
             self.log(f"System RAM available before Qwen: {free_ram_gb:.2f} GB.")
-        self.log("Qwen is running. CPU mode can take several minutes.")
+        self.log("Qwen is running. Local mode can take several minutes.")
 
         process = subprocess.Popen(
             cmd,

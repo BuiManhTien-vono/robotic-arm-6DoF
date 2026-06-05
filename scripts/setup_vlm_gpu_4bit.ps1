@@ -29,7 +29,39 @@ if (-not (Test-Path -LiteralPath $GpuPython)) {
 }
 
 & $GpuPython -m pip install --upgrade pip setuptools wheel
-& $GpuPython -m pip install torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/$CudaWheel"
+if ($CudaWheel -ne "cu121") {
+    throw "This setup script currently pins tested Windows wheels for cu121 only."
+}
+
+$WheelDir = Join-Path $ProjectRoot "data\downloads\pytorch_cu121"
+New-Item -ItemType Directory -Force -Path $WheelDir | Out-Null
+$Wheels = @(
+    @{
+        Name = "torch-2.5.1+cu121-cp310-cp310-win_amd64.whl"
+        Url = "https://download.pytorch.org/whl/cu121/torch-2.5.1%2Bcu121-cp310-cp310-win_amd64.whl"
+    },
+    @{
+        Name = "torchvision-0.20.1+cu121-cp310-cp310-win_amd64.whl"
+        Url = "https://download.pytorch.org/whl/cu121/torchvision-0.20.1%2Bcu121-cp310-cp310-win_amd64.whl"
+    },
+    @{
+        Name = "torchaudio-2.5.1+cu121-cp310-cp310-win_amd64.whl"
+        Url = "https://download.pytorch.org/whl/cu121/torchaudio-2.5.1%2Bcu121-cp310-cp310-win_amd64.whl"
+    }
+)
+foreach ($Wheel in $Wheels) {
+    $OutFile = Join-Path $WheelDir $Wheel.Name
+    if (-not (Test-Path -LiteralPath $OutFile)) {
+        Write-Host "Downloading $($Wheel.Name)"
+        curl.exe -L -C - --retry 10 --retry-all-errors --retry-delay 5 --connect-timeout 60 --output $OutFile $Wheel.Url
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to download $($Wheel.Name)"
+        }
+    } else {
+        Write-Host "Using cached wheel $($Wheel.Name)"
+    }
+}
+& $GpuPython -m pip install --find-links $WheelDir "torch==2.5.1+cu121" "torchvision==0.20.1+cu121" "torchaudio==2.5.1+cu121"
 & $GpuPython -m pip install -r ".\requirements_vlm_local.txt"
 & $GpuPython -m pip install "bitsandbytes>=0.43.3"
 

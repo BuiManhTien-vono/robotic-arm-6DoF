@@ -223,7 +223,11 @@ def _load_qwen_model_processor(
     device_map: str,
     load_in_4bit: bool,
 ) -> tuple[Any, Any]:
-    cache_key = (model_id, min_pixels, max_pixels, device_map, load_in_4bit)
+    load_in_8bit = _env_bool("QWEN_VL_8BIT", False)
+    if load_in_4bit and load_in_8bit:
+        raise ValueError("Use only one quantization mode: QWEN_VL_4BIT=1 or QWEN_VL_8BIT=1, not both.")
+
+    cache_key = (model_id, min_pixels, max_pixels, device_map, load_in_4bit, load_in_8bit)
     if cache_key in _QWEN_CACHE:
         return _QWEN_CACHE[cache_key]
 
@@ -244,15 +248,21 @@ def _load_qwen_model_processor(
     attn_implementation = os.getenv("QWEN_VL_ATTENTION_IMPL")
     if attn_implementation:
         model_kwargs["attn_implementation"] = attn_implementation
-    if load_in_4bit:
+    if load_in_4bit or load_in_8bit:
         try:
             from transformers import BitsAndBytesConfig
         except ImportError as exc:
-            raise RuntimeError("QWEN_VL_4BIT=1 requires bitsandbytes and a transformers build with BitsAndBytesConfig.") from exc
-        model_kwargs["quantization_config"] = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,
-        )
+            raise RuntimeError("QWEN_VL_4BIT=1 or QWEN_VL_8BIT=1 requires bitsandbytes and BitsAndBytesConfig.") from exc
+        if load_in_4bit:
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+            )
+        else:
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_enable_fp32_cpu_offload=True,
+            )
 
     normalized_model_id = model_id.lower().replace("_", "-")
     try:
