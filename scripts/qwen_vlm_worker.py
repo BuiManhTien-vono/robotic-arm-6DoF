@@ -2,6 +2,7 @@ import argparse
 import json
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -83,8 +84,12 @@ def main() -> None:
             raise ValueError("--preload requires --model")
         start_time = time.monotonic()
         print(f"Preloading Qwen model: {args.model}", file=sys.stderr, flush=True)
-        preload_qwen_local(model_id=args.model)
-        print(f"Qwen model preloaded in {time.monotonic() - start_time:.1f}s.", file=sys.stderr, flush=True)
+        try:
+            preload_qwen_local(model_id=args.model)
+            print(f"Qwen model preloaded in {time.monotonic() - start_time:.1f}s.", file=sys.stderr, flush=True)
+        except Exception:
+            print("Qwen preload failed. The worker will stay alive and retry on the next request.", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
     print(args.ready_message, file=sys.stderr, flush=True)
     for line in sys.stdin:
         line = line.strip()

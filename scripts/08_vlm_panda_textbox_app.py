@@ -1,5 +1,6 @@
 import argparse
 import ctypes
+import gc
 import importlib.util
 import json
 import os
@@ -317,6 +318,8 @@ class VlmPandaTextboxApp:
             self.running = False
             self.root.after(0, lambda: self.run_button.configure(state="normal"))
             self.root.after(0, lambda: self.reset_button.configure(state="normal"))
+            if self.args.unload_graspnet_after_run:
+                self.unload_graspnet_adapter()
             if self.should_preload_qwen_worker():
                 self.root.after(500, self.preload_qwen_worker_async)
 
@@ -495,6 +498,20 @@ class VlmPandaTextboxApp:
         except Exception:
             if process.poll() is None:
                 process.terminate()
+
+    def unload_graspnet_adapter(self) -> None:
+        if self.graspnet_adapter is None:
+            return
+        self.graspnet_adapter = None
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        self.log("Unloaded GraspNet adapter to free RAM/VRAM before Qwen preload.")
 
     def localize_qwen_worker(
         self,
@@ -732,6 +749,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--collision-thresh", type=float, default=0.01)
     parser.add_argument("--voxel-size", type=float, default=0.01)
     parser.add_argument("--no-graspnet", action="store_true", help="Start with GraspNet disabled.")
+    parser.add_argument("--unload-graspnet-after-run", action=argparse.BooleanOptionalAction, default=False, help="Unload cached GraspNet model after each command to leave memory for Qwen.")
     parser.add_argument("--use-graspnet-orientation", action="store_true")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--default-command", default="Hay gap mot vat the nho tren ban.")

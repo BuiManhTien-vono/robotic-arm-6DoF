@@ -75,4 +75,5 @@ if ($MissingCacheFiles.Count -gt 0) {
     --camera-height 480 `
     --vlm-max-pixels 25088 `
     --vlm-max-new-tokens 96 `
+    --unload-graspnet-after-run `
     --speed-scale 1.0
